@@ -104,7 +104,7 @@ def extract_jobs_from_search_url(search_url: str):
     platform = detect_platform(search_url)
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
