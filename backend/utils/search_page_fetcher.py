@@ -1,110 +1,107 @@
 import json
-import time
-from urllib.parse import urljoin, urlparse
-
+from urllib.parse import urlparse, urljoin
 from playwright.sync_api import sync_playwright
 
 
-# ---------------------------------------
-# Detect platform
-# ---------------------------------------
 def detect_platform(url: str) -> str:
     domain = urlparse(url).netloc.lower()
-
     if "indeed" in domain:
         return "indeed"
     elif "linkedin" in domain:
         return "linkedin"
-    else:
-        return "other"
+    return "other"
 
 
-# ---------------------------------------
-# Indeed search page extraction using Playwright
-# ---------------------------------------
-def extract_indeed_jobs_with_playwright(search_url: str):
+def extract_indeed_jobs_from_search(page):
     jobs = []
+    seen = set()
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)   # keep False for testing first
-        page = browser.new_page()
+    page.wait_for_timeout(5000)
 
-        # Open page
-        page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
-
-        # Give page some time to render job cards
-        page.wait_for_timeout(5000)
-
-        # Try to close cookie popups / interruptions if needed
-        # (safe ignore if not present)
+    for txt in ["Accept", "I agree", "Got it"]:
         try:
-            page.locator("button:has-text('Accept')").click(timeout=2000)
+            page.locator(f"button:has-text('{txt}')").first.click(timeout=1500)
+            page.wait_for_timeout(1000)
         except:
             pass
 
+    cards = page.locator("a[data-jk], a[href*='/viewjob'], a[href*='/rc/clk']").all()
+
+    for card in cards:
         try:
-            page.locator("button:has-text('I agree')").click(timeout=2000)
-        except:
-            pass
-
-        page.wait_for_timeout(3000)
-
-        # Extract all anchors on page
-        anchors = page.locator("a").all()
-
-        seen = set()
-
-        for a in anchors:
-            try:
-                href = a.get_attribute("href")
-                text = a.inner_text().strip()
-
-                if not href:
-                    continue
-
-                # Indeed job result links often contain /viewjob or /rc/clk
-                if "/viewjob" in href or "/rc/clk" in href:
-                    full_url = urljoin("https://www.indeed.com", href)
-
-                    title = text.strip()
-                    if not title:
-                        continue
-
-                    # avoid duplicates
-                    if full_url in seen:
-                        continue
-
-                    seen.add(full_url)
-
-                    jobs.append({
-                        "title": title,
-                        "company": "Unknown",   # company extraction comes later / can be improved
-                        "job_url": full_url
-                    })
-
-            except:
+            href = card.get_attribute("href") or ""
+            if not href:
                 continue
 
-        browser.close()
+            job_url = urljoin("https://www.indeed.com", href)
 
-    # remove noisy duplicates by title/url
-    cleaned = []
-    seen_keys = set()
+            if job_url in seen:
+                continue
+            seen.add(job_url)
 
-    for job in jobs:
-        key = (job["title"].lower(), job["job_url"].lower())
-        if key not in seen_keys:
-            cleaned.append(job)
-            seen_keys.add(key)
+            title = ""
+            try:
+                title = card.inner_text().strip()
+            except:
+                pass
 
-    return cleaned
+            if not title:
+                try:
+                    title = card.get_attribute("aria-label") or ""
+                except:
+                    title = ""
+
+            jobs.append({
+                "title": title.strip() or "Unknown Title",
+                "company": "Unknown",
+                "job_url": job_url
+            })
+        except:
+            continue
+
+    return jobs
 
 
-# ---------------------------------------
-# LinkedIn search page extraction (starter version)
-# ---------------------------------------
-def extract_linkedin_jobs_with_playwright(search_url: str):
+def extract_linkedin_jobs_from_search(page):
     jobs = []
+    seen = set()
+
+    page.wait_for_timeout(5000)
+
+    cards = page.locator("a[href*='/jobs/view/']").all()
+
+    for card in cards:
+        try:
+            href = card.get_attribute("href") or ""
+            if not href:
+                continue
+
+            job_url = urljoin("https://www.linkedin.com", href.split("?")[0])
+
+            if job_url in seen:
+                continue
+            seen.add(job_url)
+
+            title = ""
+            try:
+                title = card.inner_text().strip()
+            except:
+                pass
+
+            jobs.append({
+                "title": title or "Unknown Title",
+                "company": "Unknown",
+                "job_url": job_url
+            })
+        except:
+            continue
+
+    return jobs
+
+
+# THIS is the function your run_full_auto_apply.py is trying to import
+def extract_jobs_from_search_url(search_url: str):
+    platform = detect_platform(search_url)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -112,53 +109,14 @@ def extract_linkedin_jobs_with_playwright(search_url: str):
         page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(5000)
 
-        anchors = page.locator("a").all()
-        seen = set()
-
-        for a in anchors:
-            try:
-                href = a.get_attribute("href")
-                text = a.inner_text().strip()
-
-                if not href:
-                    continue
-
-                if "/jobs/view/" in href:
-                    full_url = urljoin("https://www.linkedin.com", href)
-
-                    if not text:
-                        continue
-
-                    if full_url in seen:
-                        continue
-
-                    seen.add(full_url)
-
-                    jobs.append({
-                        "title": text,
-                        "company": "Unknown",
-                        "job_url": full_url
-                    })
-            except:
-                continue
+        if platform == "indeed":
+            jobs = extract_indeed_jobs_from_search(page)
+        elif platform == "linkedin":
+            jobs = extract_linkedin_jobs_from_search(page)
+        else:
+            jobs = []
 
         browser.close()
-
-    return jobs
-
-
-# ---------------------------------------
-# Main extraction
-# ---------------------------------------
-def extract_jobs_from_search_page(search_url: str):
-    platform = detect_platform(search_url)
-
-    if platform == "indeed":
-        jobs = extract_indeed_jobs_with_playwright(search_url)
-    elif platform == "linkedin":
-        jobs = extract_linkedin_jobs_with_playwright(search_url)
-    else:
-        jobs = []
 
     return {
         "platform": platform,
@@ -168,17 +126,9 @@ def extract_jobs_from_search_page(search_url: str):
     }
 
 
-# ---------------------------------------
-# Terminal test
-# ---------------------------------------
 if __name__ == "__main__":
-    search_url = input("Paste Indeed / LinkedIn SEARCH PAGE URL: ").strip()
+    search_url = input("Paste search page URL: ").strip()
+    result = extract_jobs_from_search_url(search_url)
 
-    try:
-        result = extract_jobs_from_search_page(search_url)
-
-        print("\n===== SEARCH PAGE EXTRACTION RESULT =====\n")
-        print(json.dumps(result, indent=4))
-
-    except Exception as e:
-        print(f"\nError while extracting jobs from search page: {e}")
+    print("\n===== SEARCH PAGE EXTRACTION RESULT =====\n")
+    print(json.dumps(result, indent=4))

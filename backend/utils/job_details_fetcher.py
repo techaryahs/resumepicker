@@ -1,225 +1,198 @@
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urljoin
 import json
 import re
-
-from utils.jd_parser import parse_job_description
-
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    )
-}
+from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright
+from jd_parser import parse_job_description
 
 
-# ---------------------------------------
-# Detect platform from URL
-# ---------------------------------------
 def detect_platform(url: str) -> str:
     domain = urlparse(url).netloc.lower()
-
     if "indeed" in domain:
         return "indeed"
     elif "linkedin" in domain:
         return "linkedin"
-    else:
-        return "other"
+    return "other" 
 
 
-# ---------------------------------------
-# Fetch page HTML
-# ---------------------------------------
-def fetch_page_html(url: str) -> str:
-    response = requests.get(url, headers=HEADERS, timeout=25)
-    response.raise_for_status()
-    return response.text
+def extract_indeed_job_text(job_url: str):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        page = browser.new_page()
+        page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
+
+        for txt in ["Accept", "I agree", "Got it"]:
+            try:
+                page.locator(f"button:has-text('{txt}')").first.click(timeout=1500)
+                page.wait_for_timeout(1000)
+            except:
+                pass
+
+        title = ""
+        company = ""
+        description = ""
+
+        try:
+            title = page.locator("h1").first.inner_text().strip()
+        except:
+            pass
+
+        company_selectors = [
+            "[data-testid='inlineHeader-companyName']",
+            ".jobsearch-CompanyInfoWithoutHeaderImage",
+            "div[data-company-name]",
+            "span.css-1saizt3"
+        ]
+        for selector in company_selectors:
+            try:
+                company = page.locator(selector).first.inner_text().strip()
+                if company:
+                    break
+            except:
+                continue
+
+        description_selectors = [
+            "#jobDescriptionText",
+            "[data-testid='jobsearch-JobComponent-description']"
+        ]
+        for selector in description_selectors:
+            try:
+                description = page.locator(selector).first.inner_text().strip()
+                if description:
+                    break
+            except:
+                continue
+
+        if not description:
+            try:
+                description = page.locator("body").inner_text()
+            except:
+                description = ""
+
+        browser.close()
+
+        raw = f"Role: {title}\nCompany: {company}\n{description}".strip()
+        return {
+            "title": title,
+            "company": company,
+            "raw_text": raw
+        }
 
 
-# ---------------------------------------
-# Clean text helper
-# ---------------------------------------
-def clean_text(text: str) -> str:
-    if not text:
-        return ""
-    return re.sub(r"\s+", " ", text).strip()
+def extract_linkedin_job_text(job_url: str):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        page = browser.new_page()
+        page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
+
+        title = ""
+        company = ""
+        description = ""
+
+        try:
+            title = page.locator("h1").first.inner_text().strip()
+        except:
+            pass
+
+        company_selectors = [
+            "a.topcard__org-name-link",
+            "span.topcard__flavor",
+            "div.topcard__org-name-link"
+        ]
+        for selector in company_selectors:
+            try:
+                company = page.locator(selector).first.inner_text().strip()
+                if company:
+                    break
+            except:
+                continue
+
+        description_selectors = [
+            "div.show-more-less-html__markup",
+            "div.description__text",
+            "section.show-more-less-html"
+        ]
+        for selector in description_selectors:
+            try:
+                description = page.locator(selector).first.inner_text().strip()
+                if description:
+                    break
+            except:
+                continue
+
+        if not description:
+            try:
+                description = page.locator("body").inner_text()
+            except:
+                description = ""
+
+        browser.close()
+
+        raw = f"Role: {title}\nCompany: {company}\n{description}".strip()
+        return {
+            "title": title,
+            "company": company,
+            "raw_text": raw
+        }
 
 
-# ---------------------------------------
-# Indeed: extract job details text
-# ---------------------------------------
-def extract_indeed_job_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    text_parts = []
+def extract_generic_job_text(job_url: str):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)
+        page = browser.new_page()
+        page.goto(job_url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(5000)
 
-    # Job title
-    title_tag = soup.find("h1")
-    if title_tag:
-        title = clean_text(title_tag.get_text(" ", strip=True))
-        if title:
-            text_parts.append(f"Role: {title}")
+        body = ""
+        try:
+            body = page.locator("body").inner_text()
+        except:
+            pass
 
-    # Company
-    company_candidates = [
-        soup.find(attrs={"data-testid": "inlineHeader-companyName"}),
-        soup.find("div", class_="jobsearch-CompanyInfoWithoutHeaderImage"),
-        soup.find("span", class_="css-1saizt3"),
-        soup.find("div", attrs={"data-company-name": True}),
-    ]
+        browser.close()
 
-    company_name = ""
-    for tag in company_candidates:
-        if tag:
-            company_name = clean_text(tag.get_text(" ", strip=True))
-            if company_name:
-                text_parts.append(f"Company: {company_name}")
-                break
-
-    # Main description
-    description_candidates = [
-        soup.find("div", id="jobDescriptionText"),
-        soup.find(attrs={"data-testid": "jobsearch-JobComponent-description"}),
-    ]
-
-    description_text = ""
-    for desc in description_candidates:
-        if desc:
-            description_text = desc.get_text("\n", strip=True)
-            break
-
-    if description_text:
-        text_parts.append(description_text)
-
-    return "\n".join(text_parts).strip()
+        return {
+            "title": "",
+            "company": "",
+            "raw_text": body
+        }
 
 
-# ---------------------------------------
-# LinkedIn: extract job details text
-# ---------------------------------------
-def extract_linkedin_job_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    text_parts = []
-
-    # Job title
-    title_tag = soup.find("h1")
-    if title_tag:
-        title = clean_text(title_tag.get_text(" ", strip=True))
-        if title:
-            text_parts.append(f"Role: {title}")
-
-    # Company
-    company_candidates = [
-        soup.find("a", class_="topcard__org-name-link"),
-        soup.find("span", class_="topcard__flavor"),
-        soup.find("div", class_="topcard__org-name-link"),
-    ]
-
-    for tag in company_candidates:
-        if tag:
-            company = clean_text(tag.get_text(" ", strip=True))
-            if company:
-                text_parts.append(f"Company: {company}")
-                break
-
-    # Description
-    description_candidates = [
-        soup.find("div", class_="show-more-less-html__markup"),
-        soup.find("div", class_="description__text"),
-        soup.find("section", class_="show-more-less-html"),
-    ]
-
-    for desc in description_candidates:
-        if desc:
-            desc_text = desc.get_text("\n", strip=True)
-            if desc_text:
-                text_parts.append(desc_text)
-                break
-
-    return "\n".join(text_parts).strip()
-
-
-# ---------------------------------------
-# Generic fallback extractor
-# ---------------------------------------
-def extract_generic_job_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
-    text_parts = []
-
-    title_tag = soup.find("h1")
-    if title_tag:
-        title = clean_text(title_tag.get_text(" ", strip=True))
-        if title:
-            text_parts.append(f"Role: {title}")
-
-    full_text = soup.get_text("\n", strip=True)
-    full_text = re.sub(r"\n+", "\n", full_text)
-
-    if full_text:
-        text_parts.append(full_text[:20000])  # avoid too huge text
-
-    return "\n".join(text_parts).strip()
-
-
-# ---------------------------------------
-# Main raw text extractor
-# ---------------------------------------
-def extract_job_text_from_url(url: str) -> dict:
-    platform = detect_platform(url)
-    html = fetch_page_html(url)
+def extract_job_requirements_from_url(job_url: str):
+    platform = detect_platform(job_url)
 
     if platform == "indeed":
-        raw_text = extract_indeed_job_text(html)
+        data = extract_indeed_job_text(job_url)
     elif platform == "linkedin":
-        raw_text = extract_linkedin_job_text(html)
+        data = extract_linkedin_job_text(job_url)
     else:
-        raw_text = extract_generic_job_text(html)
+        data = extract_generic_job_text(job_url)
 
-    return {
-        "platform": platform,
-        "source_url": url,
-        "raw_text": raw_text
-    }
+    raw_text = data["raw_text"].strip()
 
-
-# ---------------------------------------
-# Full pipeline:
-# URL -> raw text -> jd_parser
-# ---------------------------------------
-def extract_job_requirements_from_url(url: str) -> dict:
-    data = extract_job_text_from_url(url)
-    raw_text = data["raw_text"]
-
-    if not raw_text.strip():
+    if not raw_text:
         return {
-            "source_url": url,
-            "platform": data["platform"],
-            "error": "Could not extract job text from this page."
+            "source_url": job_url,
+            "platform": platform,
+            "error": "Could not extract job text."
         }
 
     parsed = parse_job_description(raw_text)
 
     return {
-        "source_url": url,
-        "platform": data["platform"],
-        "raw_job_text_preview": raw_text[:1500],
+        "source_url": job_url,
+        "platform": platform,
+        "extracted_title": data["title"],
+        "extracted_company": data["company"],
+        "raw_job_text_preview": raw_text[:2000],
         "parsed_requirements": parsed
     }
 
 
-# ---------------------------------------
-# Terminal test
-# ---------------------------------------
 if __name__ == "__main__":
-    job_url = input("Paste DIRECT job URL (Indeed / LinkedIn): ").strip()
+    url = input("Paste job URL: ").strip()
+    result = extract_job_requirements_from_url(url)
 
-    try:
-        result = extract_job_requirements_from_url(job_url)
-
-        print("\n===== JOB DETAILS EXTRACTION RESULT =====\n")
-        print(json.dumps(result, indent=4))
-
-    except Exception as e:
-        print(f"\nError while extracting job details: {e}")
+    print("\n===== JOB DETAILS EXTRACTION RESULT =====\n")
+    print(json.dumps(result, indent=4))

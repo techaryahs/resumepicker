@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Streamlit local files
+.streamlit/
+
+# Uploaded resumes / personal files
+backend/uploads/*
+!backend/uploads/.gitkeepbackend/venv/
+venv/
+__pycache__/
+*.pyc
