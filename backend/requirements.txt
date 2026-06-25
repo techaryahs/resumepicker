@@ -6,3 +6,5 @@ python-docx
 scikit-learn
 sentence-transformers
 pydantic
+playwright
+streamlit
